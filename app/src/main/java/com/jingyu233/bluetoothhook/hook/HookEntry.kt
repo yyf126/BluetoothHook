@@ -59,9 +59,6 @@ class HookEntry : IXposedHookLoadPackage {
             val bluetoothScanHook = BluetoothScanHook(lpparam.classLoader, prefs)
             bluetoothScanHook.init()
 
-            // 写入Hook状态标记（供UI进程读取）
-            writeHookStatus()
-
             Logger.Hook.i(TAG, "BluetoothHook initialized successfully")
 
         } catch (e: Throwable) {
@@ -102,32 +99,6 @@ class HookEntry : IXposedHookLoadPackage {
             )
         } catch (e: Throwable) {
             Logger.Hook.e(TAG, "Failed to hook module application", e)
-        }
-    }
-
-    /**
-     * 写入Hook状态到文件系统
-     * Hook进程运行在系统进程中,使用 /data/system 目录以避免 SELinux 权限问题
-     */
-    private fun writeHookStatus() {
-        try {
-            // 方案1: 尝试写入系统可访问的目录
-            val statusFile = java.io.File("/data/system/bluetooth_hook_status.txt")
-
-            // 写入状态和时间戳
-            val statusData = "Active|${System.currentTimeMillis()}"
-            statusFile.writeText(statusData)
-
-            // 设置文件权限为全局可读（0644）
-            try {
-                Runtime.getRuntime().exec("chmod 644 ${statusFile.absolutePath}").waitFor()
-            } catch (e: Exception) {
-                Logger.Hook.w(TAG, "Failed to set file permissions: ${e.message}")
-            }
-
-            Logger.Hook.d(TAG, "Hook status written to /data/system: $statusData")
-        } catch (e: Exception) {
-            Logger.Hook.e(TAG, "Failed to write hook status file", e)
         }
     }
 }

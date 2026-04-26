@@ -71,10 +71,11 @@ class ScanResultBuilder(private val classLoader: ClassLoader) {
             val timestampNanos = SystemClock.elapsedRealtimeNanos()
 
             // 确定事件类型
+            // AOSP flags: ET_LEGACY_ADV=0x0010, ET_CONNECTABLE=0x0001, ET_SCANNABLE=0x0002
             val eventType = if (useExtendedAdvertising) {
-                0x00  // EXTENDED_ADVERTISING
+                0x01  // CONNECTABLE extended advertising
             } else {
-                0x10  // LEGACY_ADVERTISING
+                0x13  // LEGACY | CONNECTABLE | SCANNABLE
             }
 
             // 尝试使用完整参数的构造器
@@ -82,11 +83,11 @@ class ScanResultBuilder(private val classLoader: ClassLoader) {
                 XposedHelpers.newInstance(
                     scanResultClass,
                     device,                  // BluetoothDevice
-                    eventType,               // eventType: 0x10 = LEGACY, 0x00 = EXTENDED
+                    eventType,               // eventType: 0x13 = LEGACY, 0x01 = EXTENDED
                     1,                       // primaryPhy: 1 = LE 1M
                     if (useExtendedAdvertising) 1 else 0,  // secondaryPhy: 1 = LE 1M, 0 = None
-                    255,                     // advertisingSid: 255 = Not periodic
-                    0,                       // txPower: 0 = Unknown
+                    255,                     // advertisingSid: 255 = SID_NOT_PRESENT
+                    127,                     // txPower: 127 = TX_POWER_NOT_PRESENT (0x7F)
                     rssi,                    // rssi
                     0,                       // periodicAdvInt: 0 = None
                     scanRecord,              // ScanRecord
@@ -113,7 +114,12 @@ class ScanResultBuilder(private val classLoader: ClassLoader) {
      * 十六进制字符串转字节数组
      */
     private fun hexStringToByteArray(hexString: String): ByteArray {
-        val cleanHex = hexString.replace(" ", "").replace(":", "")
+        var cleanHex = hexString.replace(" ", "").replace(":", "")
+        // 奇数长度时截断最后一个字符，确保成对解析
+        if (cleanHex.length % 2 != 0) {
+            Logger.Hook.w(TAG, "Odd-length hex string (${cleanHex.length} chars), truncating last nibble")
+            cleanHex = cleanHex.substring(0, cleanHex.length - 1)
+        }
         val len = cleanHex.length
         val data = ByteArray(len / 2)
 

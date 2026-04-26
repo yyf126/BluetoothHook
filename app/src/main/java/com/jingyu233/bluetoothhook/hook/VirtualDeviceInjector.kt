@@ -48,8 +48,9 @@ class VirtualDeviceInjector(
             }
 
             // 解析虚拟设备列表
+            val json = Json { ignoreUnknownKeys = true }
             val devices = try {
-                Json.decodeFromString<List<VirtualDeviceData>>(devicesJson)
+                json.decodeFromString<List<VirtualDeviceData>>(devicesJson)
             } catch (e: Exception) {
                 // 只在首次解析失败时输出错误，避免刷屏
                 Logger.Hook.e(TAG, "JSON parse error: ${e.message}\nJSON: $devicesJson", e)
@@ -135,7 +136,7 @@ class VirtualDeviceInjector(
 
     /**
      * 将ScanResult发送给扫描客户端
-     * 根据逆向代码line 466: iScannerCallback.onScanResult(scanResult)
+     * 兼容不同Android版本的字段/方法名
      */
     private fun deliverToClient(
         scanClient: Any,
@@ -143,17 +144,28 @@ class VirtualDeviceInjector(
         scanResult: Any
     ) {
         try {
-            // 获取scannerId
-            val scannerId = XposedHelpers.getIntField(scanClient, "mScannerId")
+            // 获取scannerId：先尝试字段访问（更快，android-15.0.0_r1 Java），再尝试getter（Kotlin版本）
+            val scannerId = try {
+                XposedHelpers.getIntField(scanClient, "scannerId")
+            } catch (e: Throwable) {
+                try {
+                    XposedHelpers.callMethod(scanClient, "getScannerId") as Int
+                } catch (e2: Throwable) {
+                    XposedHelpers.getIntField(scanClient, "mScannerId")
+                }
+            }
 
             // 通过scannerMap获取ScannerApp
             val scannerApp = XposedHelpers.callMethod(scannerMap, "getById", scannerId)
                 ?: return
 
-            // 获取IScannerCallback
-            val callback = XposedHelpers.getObjectField(scannerApp, "mCallback")
+            // 获取IScannerCallback：先尝试字段callback，再尝试mCallback
+            val callback = try {
+                XposedHelpers.getObjectField(scannerApp, "callback")
+            } catch (e: Throwable) {
+                XposedHelpers.getObjectField(scannerApp, "mCallback")
+            }
             if (callback == null) {
-                // 有些客户端使用PendingIntent而不是callback
                 return
             }
 
@@ -161,7 +173,6 @@ class VirtualDeviceInjector(
             XposedHelpers.callMethod(callback, "onScanResult", scanResult)
 
         } catch (e: Throwable) {
-            // 某些客户端可能已断开连接，抛出异常让上层处理
             throw e
         }
     }
