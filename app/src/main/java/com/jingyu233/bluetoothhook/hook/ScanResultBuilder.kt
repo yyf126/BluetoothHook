@@ -6,11 +6,24 @@ import com.jingyu233.bluetoothhook.utils.Logger
 import de.robv.android.xposed.XposedHelpers
 
 /**
- * ScanResult构造器
- * 根据逆向代码分析（ScanController.java line 431）构造符合系统要求的ScanResult对象
+ * ScanResult构造器 - MIUI 14 Android 13 适配版
+ *
+ * Android 13 (API 33) 的 ScanResult 构造器:
+ * public ScanResult(BluetoothDevice device, int eventType, int primaryPhy,
+ *                   int secondaryPhy, int advertisingSid, int txPower,
+ *                   int rssi, int periodicAdvInt, ScanRecord scanRecord,
+ *                   long timestampNanos)
+ *
+ * eventType 取值:
+ * - 0x00: ET_EXTENDED_ADVERTISING
+ * - 0x01: ET_EXTENDED | ET_CONNECTABLE
+ * - 0x10: ET_LEGACY_ADVERTISING
+ * - 0x13: ET_LEGACY | ET_CONNECTABLE | ET_SCANNABLE
+ *
+ * 注意: ScanResult 是 framework 层公共 API，MIUI 不会修改它
+ * 所以这个类在所有 Android 13 设备上应该都是兼容的
  */
 class ScanResultBuilder(private val classLoader: ClassLoader) {
-
     companion object {
         private val TAG = Logger.Tags.HOOK_BUILDER
     }
@@ -59,15 +72,10 @@ class ScanResultBuilder(private val classLoader: ClassLoader) {
             )
 
             // 4. 构造ScanResult对象
-            // 根据逆向代码line 431的构造器签名:
-            // new ScanResult(device, eventType, primaryPhy, secondaryPhy,
-            //               advertisingSid, txPower, rssi, periodicAdvInt,
-            //               scanRecord, timestamp)
             val scanResultClass = XposedHelpers.findClass(
                 "android.bluetooth.le.ScanResult",
                 classLoader
             )
-
             val timestampNanos = SystemClock.elapsedRealtimeNanos()
 
             // 确定事件类型
@@ -78,23 +86,25 @@ class ScanResultBuilder(private val classLoader: ClassLoader) {
                 0x13  // LEGACY | CONNECTABLE | SCANNABLE
             }
 
-            // 尝试使用完整参数的构造器
+            // 尝试使用完整参数的构造器 (Android 13+)
             try {
                 XposedHelpers.newInstance(
                     scanResultClass,
-                    device,                  // BluetoothDevice
-                    eventType,               // eventType: 0x13 = LEGACY, 0x01 = EXTENDED
-                    1,                       // primaryPhy: 1 = LE 1M
-                    if (useExtendedAdvertising) 1 else 0,  // secondaryPhy: 1 = LE 1M, 0 = None
-                    255,                     // advertisingSid: 255 = SID_NOT_PRESENT
-                    127,                     // txPower: 127 = TX_POWER_NOT_PRESENT (0x7F)
-                    rssi,                    // rssi
-                    0,                       // periodicAdvInt: 0 = None
-                    scanRecord,              // ScanRecord
-                    timestampNanos           // timestamp
+                    device,                                        // BluetoothDevice
+                    eventType,                                     // eventType
+                    1,                                             // primaryPhy: 1 = LE 1M
+                    if (useExtendedAdvertising) 1 else 0,           // secondaryPhy: 1 = LE 1M, 0 = None
+                    255,                                           // advertisingSid: 255 = SID_NOT_PRESENT
+                    127,                                           // txPower: 127 = TX_POWER_NOT_PRESENT (0x7F)
+                    rssi,                                          // rssi
+                    0,                                             // periodicAdvInt: 0 = None
+                    scanRecord,                                    // ScanRecord
+                    timestampNanos                                 // timestamp
                 )
             } catch (e: Exception) {
                 // 降级：使用简化构造器（兼容旧版本Android）
+                // public ScanResult(BluetoothDevice device, ScanRecord scanRecord,
+                //                   int rssi, long timestampNanos)
                 XposedHelpers.newInstance(
                     scanResultClass,
                     device,
@@ -103,7 +113,6 @@ class ScanResultBuilder(private val classLoader: ClassLoader) {
                     timestampNanos
                 )
             }
-
         } catch (e: Throwable) {
             Logger.Hook.e(TAG, "Failed to build ScanResult for MAC=$macAddress", e)
             null
@@ -122,14 +131,12 @@ class ScanResultBuilder(private val classLoader: ClassLoader) {
         }
         val len = cleanHex.length
         val data = ByteArray(len / 2)
-
         var i = 0
         while (i < len) {
             data[i / 2] = ((Character.digit(cleanHex[i], 16) shl 4) +
                     Character.digit(cleanHex[i + 1], 16)).toByte()
             i += 2
         }
-
         return data
     }
 
@@ -140,24 +147,15 @@ class ScanResultBuilder(private val classLoader: ClassLoader) {
     fun generateStandardAdvData(deviceName: String): String {
         val nameBytes = deviceName.toByteArray(Charsets.UTF_8)
         val nameLength = nameBytes.size
-
         // Flags AD结构 (3 bytes): 02 01 06
-        // - Length: 0x02
-        // - Type: 0x01 (Flags)
-        // - Data: 0x06 (LE General Discoverable Mode, BR/EDR Not Supported)
         val flags = "020106"
-
         // Complete Local Name AD结构
-        // - Length: nameLength + 1
-        // - Type: 0x09 (Complete Local Name)
-        // - Data: name bytes
         val nameHex = StringBuilder()
-        nameHex.append(String.format("%02X", nameLength + 1)) // Length
-        nameHex.append("09")                                   // Type
+        nameHex.append(String.format("%02X", nameLength + 1))
+        nameHex.append("09")
         nameBytes.forEach { byte ->
             nameHex.append(String.format("%02X", byte))
         }
-
         return flags + nameHex.toString()
     }
 
