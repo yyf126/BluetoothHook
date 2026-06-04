@@ -8,8 +8,15 @@ import de.robv.android.xposed.XposedHelpers
 import java.lang.reflect.Method
 
 /**
- * 蓝牙扫描Hook核心类
- * 负责拦截ScanController.onScanResultInternal并注入虚拟设备
+ * 蓝牙扫描Hook核心类 - MIUI 14 Android 13 适配版
+ *
+ * Hook目标: com.android.bluetooth.gatt.GattService.onScanResultInternal
+ * 方法签名: (int, int, String, int, int, int, int, int, int, byte[])V
+ *
+ * MIUI 14 的蓝牙扫描架构:
+ * - GattService 持有 mScanManager (ScanManager)
+ * - ScanManager 持有 mScannerMap (ContextMap<IScannerCallback, ...>)
+ * - 扫描结果通过 IScannerCallback.onScanResult(ScanResult) 回调给应用
  */
 class BluetoothScanHook(
     private val classLoader: ClassLoader,
@@ -19,11 +26,14 @@ class BluetoothScanHook(
         private val TAG = Logger.Tags.HOOK_SCANNER
         private const val METHOD_ON_SCAN_RESULT_INTERNAL = "onScanResultInternal"
 
-        // 不同Android版本/OEM可能使用不同的类名
+        // MIUI 14 候选类（按优先级排序）
+        // MIUI 14 将扫描逻辑放在 GattService 中，而非 AOSP 的 ScanController/TransitionalScanHelper
         private val CANDIDATE_CLASSES = arrayOf(
-            "com.android.bluetooth.le_scan.ScanController",
-            "com.android.bluetooth.le_scan.TransitionalScanHelper",
-            "com.android.bluetooth.gatt.ScanManager"
+            "com.android.bluetooth.gatt.GattService",              // MIUI 14 实际使用的类 ★
+            "com.android.bluetooth.gatt.ScanManager",                // MIUI 14 备选（ScanManager也存在）
+            "com.android.bluetooth.le_scan.ScanController",         // AOSP Android 12+
+            "com.android.bluetooth.le_scan.TransitionalScanHelper",  // AOSP Android 13+
+            "com.android.bluetooth.gatt.ScanManagerInjector"        // MIUI 特有注入器
         )
     }
 
@@ -32,7 +42,7 @@ class BluetoothScanHook(
 
     fun init() {
         try {
-            Logger.Hook.i(TAG, "Initializing BluetoothScanHook")
+            Logger.Hook.i(TAG, "Initializing BluetoothScanHook for MIUI 14")
 
             // 初始化辅助工具
             scanResultBuilder = ScanResultBuilder(classLoader)
@@ -44,7 +54,7 @@ class BluetoothScanHook(
             if (hooked) {
                 Logger.Hook.i(TAG, "Successfully hooked onScanResultInternal")
             } else {
-                Logger.Hook.e(TAG, "Failed to hook scan methods - no matching class/method found", null)
+                Logger.Hook.e(TAG, "Failed to hook scan methods - no matching class/method found")
             }
 
         } catch (e: Throwable) {
@@ -53,8 +63,13 @@ class BluetoothScanHook(
     }
 
     /**
-     * Hook onScanResultInternal方法
+     * Hook onScanResultInternal 方法
      * 使用反射在运行时发现方法，兼容所有Android版本和OEM定制
+     *
+     * MIUI 14 签名: (int eventType, int addressType, String address,
+     *              int primaryPhy, int secondaryPhy, int advertisingSid,
+     *              int txPower, int rssi, int periodicAdvInt, byte[] scanRecord)
+     * 注意: 只有10个参数，没有 AOSP Android 15 的第11个参数 String originalAddress
      */
     private fun hookScanResultInternal(): Boolean {
         for (className in CANDIDATE_CLASSES) {
@@ -65,7 +80,7 @@ class BluetoothScanHook(
                 continue
             }
 
-            // 通过反射查找所有名为onScanResultInternal的方法
+            // 通过反射查找所有名为 onScanResultInternal 的方法
             val methods = findMethodsByName(clazz, METHOD_ON_SCAN_RESULT_INTERNAL)
             if (methods.isEmpty()) {
                 Logger.Hook.i(TAG, "No $METHOD_ON_SCAN_RESULT_INTERNAL in $className, trying next class...")
@@ -129,8 +144,12 @@ class BluetoothScanHook(
 
     /**
      * 注入虚拟设备到扫描结果
-     * 在真实扫描结果处理完后调用
-     * 兼容不同Android版本的类结构
+     * 兼容 MIUI 14 的 GattService 结构
+     *
+     * MIUI 14 的 GattService 结构:
+     * - this (GattService) 持有 mScanManager (ScanManager)
+     * - mScanManager 持有 scannerMap (ContextMap<IScannerCallback, PendingIntentInfo>)
+     * - 通过 mScanManager.getRegularScanQueue() 获取活跃扫描客户端
      */
     private fun injectVirtualDevices(param: XC_MethodHook.MethodHookParam) {
         try {
@@ -145,27 +164,31 @@ class BluetoothScanHook(
 
             val instance = param.thisObject
 
-            // 获取ScanManager：可能是字段(mScanManager)，也可能this本身就是ScanManager
+            // MIUI 14: GattService 中的扫描管理相关字段
+            // GattService -> mScanManager -> ScanManager
             val scanManager = getFieldSafe(instance, "mScanManager")
                 ?: getFieldSafe(instance, "mScanHelper")
                 ?: instance // 如果都没有，this本身可能就是ScanManager
 
-            // 获取ScannerMap：尝试多个可能的字段名
-            // TransitionalScanHelper: instance.mScannerMap
-            // ScanController (latest): instance.mScanHelper.mScannerMap
-            // ScanManager (older): scanManager.mScannerMap
+            // 获取 ScannerMap (ContextMap<IScannerCallback, PendingIntentInfo>)
+            // 尝试多个可能的字段路径:
+            // 1. GattService.mScannerMap (如果GattService直接持有)
+            // 2. ScanManager.mScannerMap (如果ScanManager持有)
+            // 3. GattService.mScanManager.mScannerMap
             val scannerMap = getFieldSafe(instance, "mScannerMap")
                 ?: getFieldSafe(scanManager, "mScannerMap")
                 ?: getFieldSafe(getFieldSafe(instance, "mScanHelper"), "mScannerMap")
-                ?: getFieldSafe(instance, "mAppScanStats")
+
             if (scannerMap == null) {
                 Logger.Hook.w(TAG, "Cannot find scannerMap field, skipping injection")
                 return
             }
 
-            // 获取当前扫描队列：尝试多个可能的方法名
+            // 获取当前扫描队列
+            // MIUI 14 ScanManager 的方法名
             val scanQueue = callMethodSafe(scanManager, "getRegularScanQueue") as? Collection<*>
                 ?: callMethodSafe(scanManager, "getScanQueue") as? Collection<*>
+
             if (scanQueue == null || scanQueue.isEmpty()) {
                 return // 没有活跃的扫描客户端，静默返回
             }
