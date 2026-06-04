@@ -80,10 +80,12 @@ class ScanResultBuilder(private val classLoader: ClassLoader) {
 
             // 确定事件类型
             // AOSP flags: ET_LEGACY_ADV=0x0010, ET_CONNECTABLE=0x0001, ET_SCANNABLE=0x0002
+            // 真实BLE设备通常使用 ADV_NONCONN_IND (0x10) 或 ADV_IND (0x13)
+            // 雅迪车辆使用 ADV_NONCONN_IND: 只有 ET_LEGACY_ADV 标志
             val eventType = if (useExtendedAdvertising) {
                 0x01  // CONNECTABLE extended advertising
             } else {
-                0x13  // LEGACY | CONNECTABLE | SCANNABLE
+                0x10  // LEGACY_ADVERTISING (ADV_NONCONN_IND) - 与真实雅迪车辆一致
             }
 
             // 尝试使用完整参数的构造器 (Android 13+)
