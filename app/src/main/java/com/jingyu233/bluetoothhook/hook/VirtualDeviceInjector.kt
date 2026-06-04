@@ -9,8 +9,14 @@ import kotlinx.serialization.decodeFromString
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 虚拟设备注入器
- * 负责管理虚拟设备列表并将它们注入到扫描结果中
+ * 虚拟设备注入器 - MIUI 14 Android 13 适配版
+ *
+ * MIUI 14 的扫描客户端结构:
+ * - ScanClient: 扫描客户端对象，持有 scannerId
+ * - ContextMap<IScannerCallback, PendingIntentInfo>: 存储所有注册的扫描器
+ * - 通过 scannerMap.getById(scannerId) 获取 App 对象
+ * - App 对象持有 callback (IScannerCallback) 字段
+ * - 通过 callback.onScanResult(scanResult) 发送扫描结果
  */
 class VirtualDeviceInjector(
     private val scanResultBuilder: ScanResultBuilder,
@@ -26,9 +32,9 @@ class VirtualDeviceInjector(
     /**
      * 注入虚拟设备到扫描结果
      *
-     * @param scanControllerInstance ScanController实例
+     * @param scanControllerInstance GattService/ScanController实例
      * @param scanManager ScanManager实例
-     * @param scannerMap ScannerMap实例
+     * @param scannerMap ContextMap<IScannerCallback, ...> 实例
      * @param scanQueue 当前扫描客户端队列
      */
     fun injectDevices(
@@ -47,7 +53,7 @@ class VirtualDeviceInjector(
                 return // 没有配置虚拟设备，静默返回
             }
 
-            // 解析虚拟设备列表
+            // 解析虚拟设备列表（ignoreUnknownKeys 兼容不同版本的字段差异）
             val json = Json { ignoreUnknownKeys = true }
             val devices = try {
                 json.decodeFromString<List<VirtualDeviceData>>(devicesJson)
@@ -71,7 +77,6 @@ class VirtualDeviceInjector(
                     Logger.Hook.e(TAG, "Failed to inject device ${device.name}", e)
                 }
             }
-
         } catch (e: Throwable) {
             Logger.Hook.e(TAG, "Error in injectDevices", e)
         }
@@ -136,7 +141,14 @@ class VirtualDeviceInjector(
 
     /**
      * 将ScanResult发送给扫描客户端
-     * 兼容不同Android版本的字段/方法名
+     *
+     * MIUI 14 的扫描客户端结构:
+     * 1. scanClient (ScanClient) 持有 scannerId 字段
+     * 2. 通过 scannerMap.getById(scannerId) 获取 App (ContextMap.App)
+     * 3. App 对象持有 callback (IScannerCallback) 字段
+     * 4. 通过 callback.onScanResult(scanResult) 发送结果
+     *
+     * 注意: MIUI 14 的字段名可能与 AOSP 不同，需要尝试多种可能
      */
     private fun deliverToClient(
         scanClient: Any,
@@ -144,27 +156,41 @@ class VirtualDeviceInjector(
         scanResult: Any
     ) {
         try {
-            // 获取scannerId：先尝试字段访问（更快，android-15.0.0_r1 Java），再尝试getter（Kotlin版本）
+            // 获取scannerId: 尝试多种字段名
+            // MIUI 14 ScanClient 可能使用 scannerId 或 mScannerId
             val scannerId = try {
                 XposedHelpers.getIntField(scanClient, "scannerId")
             } catch (e: Throwable) {
                 try {
                     XposedHelpers.callMethod(scanClient, "getScannerId") as Int
                 } catch (e2: Throwable) {
-                    XposedHelpers.getIntField(scanClient, "mScannerId")
+                    try {
+                        XposedHelpers.getIntField(scanClient, "mScannerId")
+                    } catch (e3: Throwable) {
+                        Logger.Hook.w(TAG, "Cannot find scannerId in scanClient: ${scanClient.javaClass.name}")
+                        return
+                    }
                 }
             }
 
-            // 通过scannerMap获取ScannerApp
+            // 通过scannerMap获取App对象
+            // ContextMap.getById(scannerId) 返回 App 对象
             val scannerApp = XposedHelpers.callMethod(scannerMap, "getById", scannerId)
                 ?: return
 
-            // 获取IScannerCallback：先尝试字段callback，再尝试mCallback
+            // 获取IScannerCallback: 尝试多种字段名
+            // MIUI 14 App 对象可能使用 callback 或 mCallback
             val callback = try {
                 XposedHelpers.getObjectField(scannerApp, "callback")
             } catch (e: Throwable) {
-                XposedHelpers.getObjectField(scannerApp, "mCallback")
+                try {
+                    XposedHelpers.getObjectField(scannerApp, "mCallback")
+                } catch (e2: Throwable) {
+                    // 有些客户端使用PendingIntent而不是callback
+                    return
+                }
             }
+
             if (callback == null) {
                 return
             }
@@ -173,6 +199,7 @@ class VirtualDeviceInjector(
             XposedHelpers.callMethod(callback, "onScanResult", scanResult)
 
         } catch (e: Throwable) {
+            // 某些客户端可能已断开连接，抛出异常让上层处理
             throw e
         }
     }
