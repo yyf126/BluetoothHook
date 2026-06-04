@@ -9,17 +9,35 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
+
+      - name: Auto increment version
+        run: |
+          # 读取当前 versionCode
+          VERSION_CODE=$(grep -oP 'versionCode \K\d+' app/build.gradle)
+          NEW_VERSION_CODE=$((VERSION_CODE + 1))
+          
+          # 替换 versionCode
+          sed -i "s/versionCode $VERSION_CODE/versionCode $NEW_VERSION_CODE/" app/build.gradle
+          
+          # 可选：同时修改 versionName，格式为 1.0.x
+          sed -i 's/versionName ".*"/versionName "1.0.'$NEW_VERSION_CODE'"/' app/build.gradle
+          
+          echo "Version code incremented: $VERSION_CODE -> $NEW_VERSION_CODE"
+          echo "NEW_VERSION_CODE=$NEW_VERSION_CODE" >> $GITHUB_ENV
+
       - name: Build APK
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
+          name: app-debug-v${{ env.NEW_VERSION_CODE }}
           path: app/build/outputs/apk/debug/*.apk
