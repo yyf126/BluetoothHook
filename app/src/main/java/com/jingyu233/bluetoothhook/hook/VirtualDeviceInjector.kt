@@ -177,6 +177,30 @@ class VirtualDeviceInjector(
             // ContextMap.getById(scannerId) 返回 App 对象
             val scannerApp = XposedHelpers.callMethod(scannerMap, "getById", scannerId)
                 ?: return
+// ★★★ 调试日志：打印接收注入的APP包名 ★★★
+try {
+    val packageName = try {
+        XposedHelpers.callMethod(scannerApp, "getPackageName") as? String
+    } catch (_: Throwable) {
+        try {
+            XposedHelpers.getObjectField(scannerApp, "packageName") as? String
+        } catch (_: Throwable) {
+            try {
+                XposedHelpers.getObjectField(scannerApp, "mPackageName") as? String
+            } catch (_: Throwable) {
+                try {
+                    val cb = XposedHelpers.getObjectField(scannerApp, "callback")
+                        ?: XposedHelpers.getObjectField(scannerApp, "mCallback")
+                    val binder = XposedHelpers.callMethod(cb, "asBinder")
+                    XposedHelpers.callMethod(binder, "getInterfaceDescriptor") as? String
+                } catch (_: Throwable) {
+                    "unknown(class=${scannerApp.javaClass.name})"
+                }
+            }
+        }
+    }
+    Logger.Hook.i(TAG, ">>> Delivering to client [scannerId=$scannerId, pkg=$packageName, appClass=${scannerApp.javaClass.name}]")
+} catch (_: Throwable) {}
 
             // 获取IScannerCallback: 尝试多种字段名
             // MIUI 14 App 对象可能使用 callback 或 mCallback
