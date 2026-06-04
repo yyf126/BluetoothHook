@@ -177,30 +177,66 @@ class VirtualDeviceInjector(
             // ContextMap.getById(scannerId) 返回 App 对象
             val scannerApp = XposedHelpers.callMethod(scannerMap, "getById", scannerId)
                 ?: return
-// ★★★ 调试日志：打印接收注入的APP包名 ★★★
-try {
-    val packageName = try {
-        XposedHelpers.callMethod(scannerApp, "getPackageName") as? String
-    } catch (_: Throwable) {
-        try {
-            XposedHelpers.getObjectField(scannerApp, "packageName") as? String
-        } catch (_: Throwable) {
+
+            // ★★★ 调试日志：打印接收注入的APP包名 ★★★
             try {
-                XposedHelpers.getObjectField(scannerApp, "mPackageName") as? String
-            } catch (_: Throwable) {
-                try {
-                    val cb = XposedHelpers.getObjectField(scannerApp, "callback")
-                        ?: XposedHelpers.getObjectField(scannerApp, "mCallback")
-                    val binder = XposedHelpers.callMethod(cb, "asBinder")
-                    XposedHelpers.callMethod(binder, "getInterfaceDescriptor") as? String
-                } catch (_: Throwable) {
-                    "unknown(class=${scannerApp.javaClass.name})"
+                // 尝试多种方式获取包名
+                var packageName: String? = null
+                val triedFields = mutableListOf<String>()
+                
+                // 尝试各种可能的字段名
+                val fieldNames = listOf("mPackageName", "packageName", "mApp", "app", "mInfo", "info", "mClient", "client")
+                for (fieldName in fieldNames) {
+                    try {
+                        val value = XposedHelpers.getObjectField(scannerApp, fieldName)
+                        triedFields.add("$fieldName=${value?.javaClass?.simpleName}")
+                        if (value is String && value.contains(".")) {
+                            packageName = value
+                            break
+                        } else if (value != null) {
+                            // 尝试从对象中获取包名
+                            try {
+                                val pkg = XposedHelpers.callMethod(value, "getPackageName") as? String
+                                if (pkg != null) {
+                                    packageName = pkg
+                                    break
+                                }
+                            } catch (_: Throwable) {
+                                try {
+                                    val pkg = XposedHelpers.getObjectField(value, "mPackageName") as? String
+                                    if (pkg != null) {
+                                        packageName = pkg
+                                        break
+                                    }
+                                } catch (_: Throwable) {}
+                            }
+                        }
+                    } catch (_: Throwable) {}
                 }
+                
+                // 如果还没找到，尝试直接调用 scannerApp 的方法
+                if (packageName == null) {
+                    try {
+                        packageName = XposedHelpers.callMethod(scannerApp, "getPackageName") as? String
+                    } catch (_: Throwable) {}
+                }
+                
+                // 如果还没找到，从 callback 的 Binder 获取
+                if (packageName == null) {
+                    try {
+                        val callback = XposedHelpers.getObjectField(scannerApp, "callback")
+                            ?: XposedHelpers.getObjectField(scannerApp, "mCallback")
+                        val binder = XposedHelpers.callMethod(callback, "asBinder")
+                        packageName = XposedHelpers.callMethod(binder, "getInterfaceDescriptor") as? String
+                    } catch (_: Throwable) {}
+                }
+                
+                // 打印调试信息
+                val finalPkg = packageName ?: "unknown"
+                Logger.Hook.i(TAG, ">>> Delivering to client [scannerId=$scannerId, pkg=$finalPkg, appClass=${scannerApp.javaClass.name}, fields=${triedFields.joinToString(",")}]")
+            } catch (_: Throwable) {
+                // 调试日志失败不影响正常注入
             }
-        }
-    }
-    Logger.Hook.i(TAG, ">>> Delivering to client [scannerId=$scannerId, pkg=$packageName, appClass=${scannerApp.javaClass.name}]")
-} catch (_: Throwable) {}
 
             // 获取IScannerCallback: 尝试多种字段名
             // MIUI 14 App 对象可能使用 callback 或 mCallback
