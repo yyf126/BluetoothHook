@@ -180,48 +180,37 @@ class VirtualDeviceInjector(
 
             // ★★★ 调试日志：打印接收注入的APP包名 ★★★
             try {
-                // 尝试多种方式获取包名
                 var packageName: String? = null
-                val triedFields = mutableListOf<String>()
+                val allFields = mutableListOf<String>()
                 
-                // 尝试各种可能的字段名
-                val fieldNames = listOf("mPackageName", "packageName", "mApp", "app", "mInfo", "info", "mClient", "client")
-                for (fieldName in fieldNames) {
-                    try {
-                        val value = XposedHelpers.getObjectField(scannerApp, fieldName)
-                        triedFields.add("$fieldName=${value?.javaClass?.simpleName}")
-                        if (value is String && value.contains(".")) {
-                            packageName = value
-                            break
-                        } else if (value != null) {
-                            // 尝试从对象中获取包名
-                            try {
-                                val pkg = XposedHelpers.callMethod(value, "getPackageName") as? String
-                                if (pkg != null) {
-                                    packageName = pkg
-                                    break
-                                }
-                            } catch (_: Throwable) {
-                                try {
-                                    val pkg = XposedHelpers.getObjectField(value, "mPackageName") as? String
-                                    if (pkg != null) {
-                                        packageName = pkg
-                                        break
-                                    }
-                                } catch (_: Throwable) {}
+                // 遍历 scannerApp 的所有字段
+                var clazz: Class<*>? = scannerApp.javaClass
+                while (clazz != null && packageName == null) {
+                    for (field in clazz.declaredFields) {
+                        field.isAccessible = true
+                        try {
+                            val value = field.get(scannerApp)
+                            val typeName = value?.javaClass?.simpleName ?: "null"
+                            allFields.add("${field.name}=$typeName")
+                            
+                            // 如果字段值是 String 且包含点号，可能是包名
+                            if (value is String && value.contains(".")) {
+                                packageName = value
                             }
+                            // 如果字段名包含 pkg 或 package，打印详细值
+                            else if ((field.name.contains("pkg", ignoreCase = true) || 
+                                      field.name.contains("package", ignoreCase = true) ||
+                                      field.name.contains("name", ignoreCase = true)) && value != null) {
+                                packageName = value.toString()
+                            }
+                        } catch (_: Throwable) {
+                            allFields.add("${field.name}=<error>")
                         }
-                    } catch (_: Throwable) {}
+                    }
+                    clazz = clazz.superclass
                 }
                 
-                // 如果还没找到，尝试直接调用 scannerApp 的方法
-                if (packageName == null) {
-                    try {
-                        packageName = XposedHelpers.callMethod(scannerApp, "getPackageName") as? String
-                    } catch (_: Throwable) {}
-                }
-                
-                // 如果还没找到，从 callback 的 Binder 获取
+                // 如果还没找到，尝试从 callback 获取 Binder 信息
                 if (packageName == null) {
                     try {
                         val callback = XposedHelpers.getObjectField(scannerApp, "callback")
@@ -231,9 +220,8 @@ class VirtualDeviceInjector(
                     } catch (_: Throwable) {}
                 }
                 
-                // 打印调试信息
                 val finalPkg = packageName ?: "unknown"
-                Logger.Hook.i(TAG, ">>> Delivering to client [scannerId=$scannerId, pkg=$finalPkg, appClass=${scannerApp.javaClass.name}, fields=${triedFields.joinToString(",")}]")
+                Logger.Hook.i(TAG, ">>> scannerId=$scannerId pkg=$finalPkg class=${scannerApp.javaClass.name} fields=[${allFields.joinToString(",")}]")
             } catch (_: Throwable) {
                 // 调试日志失败不影响正常注入
             }
